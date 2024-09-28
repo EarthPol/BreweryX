@@ -5,10 +5,12 @@ import com.dre.brewery.utility.BoundingBox;
 import com.dre.brewery.utility.LegacyUtil;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.configuration.ConfigurationSection;
 import org.jetbrains.annotations.NotNull;
 
+import java.lang.reflect.Method;
 import java.util.Objects;
 
 /**
@@ -26,8 +28,13 @@ public class BarrelBody {
 		this.signoffset = signoffset;
 		spigot = barrel.getSpigot();
 		this.bounds = new BoundingBox(0, 0, 0, 0, 0, 0);
-	}
 
+		if (BreweryPlugin.getInstance().isFolia()) {
+			initializeForFolia();
+		} else {
+			initializeForNonFolia();
+		}
+	}
 	/**
 	 * Loading from file
 	 */
@@ -35,7 +42,10 @@ public class BarrelBody {
 		this(barrel, signoffset);
 
 		if (boundsSeemBad(bounds)) {
-			if (!Bukkit.isPrimaryThread()) {
+			if (BreweryPlugin.getInstance().isFolia()) {
+				this.bounds = null;
+				return;
+			} else if (!Bukkit.isPrimaryThread()) {
 				this.bounds = null;
 				return;
 			}
@@ -46,6 +56,49 @@ public class BarrelBody {
 			this.bounds = bounds;
 		}
 	}
+	private void initializeForFolia() {
+		World world = spigot.getWorld();
+		if (world == null) {
+			BreweryPlugin.getInstance().getLogger().warning("World for the spigot is null. Cannot initialize BarrelBody on Folia.");
+			return;
+		}
+
+		try {
+			// Get the Bukkit class
+			Class<?> bukkitClass = Class.forName("org.bukkit.Bukkit");
+
+			// Get the getRegionScheduler method from the Bukkit class
+			Method getRegionSchedulerMethod = bukkitClass.getMethod("getRegionScheduler");
+
+			// Invoke getRegionScheduler to get the RegionScheduler instance
+			Object regionScheduler = getRegionSchedulerMethod.invoke(null); // Static method, so pass null as the object
+
+			// Get the RegionScheduler class
+			Class<?> regionSchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.RegionScheduler");
+
+			// Get the execute method from the RegionScheduler class that accepts Plugin, Location, and Runnable
+			Method executeMethod = regionSchedulerClass.getMethod("execute", org.bukkit.plugin.Plugin.class, org.bukkit.Location.class, java.lang.Runnable.class);
+
+			// Invoke the execute method to schedule a task in the specific region
+			executeMethod.invoke(regionScheduler, BreweryPlugin.getInstance(), spigot.getLocation(), (Runnable) () -> {
+				// This code is now safe to run in the Folia environment
+				Block broken = getBrokenBlock(true);
+				if (broken != null) {
+					barrel.remove(broken, null, true);
+				}
+			});
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			BreweryPlugin.getInstance().getLogger().warning("Error using Folia RegionScheduler: " + e.getMessage());
+		}
+	}
+
+
+	private void initializeForNonFolia() {
+		BreweryPlugin.getInstance().getLogger().info("Initialized BarrelBody in non-Folia context for spigot at: " + spigot.getLocation());
+	}
+
 
 	public Barrel getBarrel() {
 		return barrel;
@@ -235,6 +288,53 @@ public class BarrelBody {
 	 */
 	public boolean regenerateBounds() {
 		BreweryPlugin.getInstance().debugLog("Regenerating Barrel BoundingBox: " + (bounds == null ? "was null" : "area=" + bounds.area()));
+		if (BreweryPlugin.getInstance().isFolia()) {
+			return regenerateBoundsForFolia();
+		} else {
+			return regenerateBoundsForNonFolia();
+		}
+	}
+
+	private boolean regenerateBoundsForFolia() {
+		World world = spigot.getWorld();
+		if (world == null) {
+			BreweryPlugin.getInstance().getLogger().warning("World for the spigot is null. Cannot regenerate bounds on Folia.");
+			return false;
+		}
+
+		// Use reflection as before to invoke methods on RegionizedScheduler
+		try {
+			// Get the RegionScheduler class
+			Class<?> regionSchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.RegionScheduler");
+
+			// Get the getRegionScheduler method from the Bukkit class
+			Method getRegionSchedulerMethod = Class.forName("org.bukkit.Bukkit").getMethod("getRegionScheduler");
+
+			// Invoke getRegionScheduler to get the RegionScheduler instance
+			Object regionScheduler = getRegionSchedulerMethod.invoke(null); // Static method call, so pass null as the object
+
+			// Get the run method from the RegionScheduler class
+			Method runMethod = regionSchedulerClass.getMethod("run", org.bukkit.Location.class, Runnable.class);
+
+
+			// Invoke the run method to execute a task in the specific region
+			runMethod.invoke(regionScheduler, spigot.getLocation(), (Runnable) () -> {
+				Block broken = getBrokenBlock(true);
+				if (broken != null) {
+					barrel.remove(broken, null, true);
+				}
+			});
+
+			return true;
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			BreweryPlugin.getInstance().getLogger().warning("Error using Folia RegionizedScheduler: " + e.getMessage());
+			return false;
+		}
+	}
+
+	private boolean regenerateBoundsForNonFolia() {
 		Block broken = getBrokenBlock(true);
 		if (broken != null) {
 			barrel.remove(broken, null, true);
